@@ -30,6 +30,7 @@ from model import Gaussian_Loc_Scale
 from datasets import dataset_loader
 from learners import learner_loader
 
+from time import perf_counter
 
 
 #==========================================
@@ -101,7 +102,7 @@ def get_grad_funcs():
     return grad_logp, hess_logp
 
 
-def one_fold(X, Y, kth, fold_kth):
+def one_fold(X, Y, kth, fold_kth, args):
     train_index = fold_kth[0]
     test_index = fold_kth[1]
     X_train, X_test = X[train_index], X[test_index]
@@ -159,8 +160,11 @@ def main(args):
     X, Y = data.iloc[:, :-1].values, data.iloc[:, -1].values.reshape(-1,1)
     folds = create_random_repeat(X.shape[0], args.k_repeat)
     print("=== Dataset {:s} | Num {:d} | Model {:s} ===".format(args.dataset, X.shape[0], "normal"))
-    
-    results = Parallel(n_jobs=args.n_jobs, backend="multiprocessing")(delayed(one_fold)(X, Y, kth, folds[kth]) for kth in range(len(folds)))
+
+    begin = perf_counter()
+    results = Parallel(n_jobs=args.n_jobs, backend="multiprocessing")(delayed(one_fold)(X, Y, kth, folds[kth], args) for kth in range(len(folds)))
+    end = perf_counter()
+    print("Calculation time {:.4f} s".format(end-begin))
     RMSE_tests = np.array(results)
 
     print("=== RMSE Test Summary {:.4f} +/- {:.4f} ===".format(np.mean(RMSE_tests[:,0]), np.std(RMSE_tests[:,0])))

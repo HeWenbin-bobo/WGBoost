@@ -5,7 +5,7 @@
 # All rights reserved.
 # This source code is licensed under the license found in the LICENSE file in the root directory of this source tree.
 
-# Some of this code modified part of the regression_exp.py file in https://github.com/stanfordmlgroup/ngboost that loads UCI datasets.
+# Some of this code modified part of the regression_exp.py file in https://github.com/stanfordmlgroup/ngboost that prepares data and performs early stopping of boosting.
 # License: Apache License 2.0
 # The copy of the original license is attached at the bottom.
 
@@ -14,48 +14,167 @@
 #==========================================
 # Import Library
 #==========================================
+from argparse import ArgumentParser
+
+import numpy as np
 import pandas as pd
+from sklearn.model_selection import train_test_split
+from joblib import Parallel, delayed
+import torch
+from torch.func import jacrev
+
+import sys
+# sys.path.insert(0, '../src')
+from src.swgboost2 import SWGBoost2
+from src.model import Gaussian_Loc_Scale
+from src.datasets import dataset_loader
+from src.learners import learner_loader
 
 
 
 #==========================================
 # Main Functions
 #==========================================
-dataset_loader = {
-    "housing": lambda: pd.read_csv(
-        "https://archive.ics.uci.edu/ml/machine-learning-databases/housing/housing.data",
-        header=None,
-        sep='\s+',
-        # delim_whitespace=True,
-    ),
-    "concrete": lambda: pd.read_excel(
-        "https://archive.ics.uci.edu/ml/machine-learning-databases/concrete/compressive/Concrete_Data.xls"
-    ),
-    "wine": lambda: pd.read_csv(
-        "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
-        delimiter=";",
-    ),
-    "kin8nm": lambda: pd.read_csv("../data/uci/kin8nm.csv"),
-    "naval": lambda: pd.read_csv(
-        "../data/uci/naval-propulsion.txt", delim_whitespace=True, header=None
-    ).iloc[:, :-1],
-    "power": lambda: pd.read_excel("../data/uci/power-plant.xlsx"),
-    "energy": lambda: pd.read_excel(
-        "https://archive.ics.uci.edu/ml/machine-learning-databases/00242/ENB2012_data.xlsx"
-    ).iloc[:, :-1],
-    "protein": lambda: pd.read_csv("../data/uci/protein.csv")[
-        ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "RMSD"]
-    ],
-    "yacht": lambda: pd.read_csv(
-        "http://archive.ics.uci.edu/ml/machine-learning-databases/00243/yacht_hydrodynamics.data",
-        header=None,
-        delim_whitespace=True,
-    ),
-    "segment": lambda: pd.read_csv("../data/uci/segment.csv", index_col=0),
-    "segment_ood": lambda: pd.read_csv("../data/uci/segment_ood.csv", index_col=0),
-    "sensorless": lambda: pd.read_csv("../data/uci/sensorless-drive.csv", index_col=0),
-    "sensorless_ood": lambda: pd.read_csv("../data/uci/sensorless-drive_ood.csv", index_col=0),
-}
+def parse_arguments():
+    argparser = ArgumentParser()
+    argparser.add_argument("--id", type=str, default="02_uci")
+    argparser.add_argument("--n_jobs", type=int, default=10)
+    argparser.add_argument("--dataset", type=str, default="housing")
+    argparser.add_argument("--k_repeat", type=int, default=20)
+    argparser.add_argument("--learner", type=str, default="tree")
+    argparser.add_argument("--learning_rate", type=float, default=0.1)
+    argparser.add_argument("--n_estimators", type=int, default=4000)
+    argparser.add_argument("--n_particles", type=int, default=10)
+    argparser.add_argument("--d_particles", type=int, default=2)
+    argparser.add_argument("--bandwidth", type=float, default=0.1)
+    argparser.add_argument("--subsample", type=float, default=1.0)
+    return argparser.parse_args()
+
+
+def preprocess_standardisation(dat_train, dat_test):
+    if dat_train.shape[1] > 1:
+        dat_train_mean, dat_train_std = np.mean(dat_train, axis=0), np.std(dat_train, axis=0)
+        dat_train_std[dat_train_std == 0] = 1.0
+    else:
+        dat_train_mean, dat_train_std = np.mean(dat_train), np.std(dat_train)
+    dat_train = ( dat_train - dat_train_mean ) / dat_train_std
+    dat_test = ( dat_test - dat_train_mean ) / dat_train_std
+    return (dat_train, dat_test), (dat_train_mean, dat_train_std)
+
+
+def create_random_repeat(num_data, num_repeat):
+    # Follow thw way in split_data_train_test.py file in https://github.com/yaringal/DropoutUncertaintyExps
+    folds = []
+    for i in range(num_repeat):
+        permutation = np.random.choice(range(num_data), num_data, replace=False)
+        train_index = permutation[0:round(num_data*0.9)]
+        test_index = permutation[round(num_data*0.9):num_data]
+        folds.append((train_index, test_index))
+    return folds
+
+
+def get_grad_funcs():
+    alpha = 0.01
+    beta = 0.01
+    scale = 10
+    
+    def log_posterior(p0, p1, y):
+        return - (1/2) * ( (y - p0)**2 ) / torch.exp(2*p1) - (1/2) * (p0**2) / (scale**2) - ( alpha + 1 ) * p1 - beta / torch.exp(p1)
+
+    log_grad_p0 = jacrev(log_posterior, argnums=0)
+    log_grad_p1 = jacrev(log_posterior, argnums=1)
+    log_hess_p0 = jacrev(jacrev(log_posterior, argnums=0), argnums=0)
+    log_hess_p1 = jacrev(jacrev(log_posterior, argnums=1), argnums=1)
+    
+    def grad_logp(p, y):
+        q = p.clone()
+        q[0] = log_grad_p0(p[0], p[1], y[0])
+        q[1] = log_grad_p1(p[0], p[1], y[0])
+        return q
+
+    def hess_logp(p, y):
+        q = p.clone()
+        q[0] = log_hess_p0(p[0], p[1], y[0])
+        q[1] = log_hess_p1(p[0], p[1], y[0])
+        return q
+    
+    return grad_logp, hess_logp
+
+
+def one_fold(X, Y, kth, fold_kth, args):
+    train_index = fold_kth[0]
+    test_index = fold_kth[1]
+    X_train, X_test = X[train_index], X[test_index]
+    Y_train, Y_test = Y[train_index], Y[test_index]
+
+    # preprocess data by standardisation, where likelihood will be adjusted using change of variable formula
+    (X_train, X_test), (X_train_mean, X_train_std) = preprocess_standardisation(X_train, X_test)
+    (Y_train, Y_test), (Y_train_mean, Y_train_std) = preprocess_standardisation(Y_train, Y_test)
+
+    X_buf, X_val, Y_buf, Y_val = train_test_split(X_train, Y_train, test_size=0.2, random_state=1)
+
+    model = Gaussian_Loc_Scale()
+    grad_logp, hess_logp = get_grad_funcs()
+
+    reg = SWGBoost2(grad_logp, hess_logp, learner_loader[args.learner]['class'],
+        learner_param = learner_loader[args.learner]['default_param'],
+        learning_rate = args.learning_rate,
+        n_estimators = args.n_estimators,
+        n_particles = args.n_particles,
+        d_particles = args.d_particles,
+        bandwidth = args.bandwidth,
+        subsample = args.subsample)
+    reg.fit(X_buf, Y_buf)
+
+    # early stopping for estimation number using the validation set
+    P_val_eachitr = reg.predict_eachitr(X_val)
+    RMSE_val_eachitr = [ model.rmse_with_standardised_output(Y_val, P_val, Y_train_std) for P_val in P_val_eachitr ]
+    bestitr = int( np.argmin(RMSE_val_eachitr) + 1 )
+    
+    # train the SWGBoost using all the data
+    reg = SWGBoost2(grad_logp, hess_logp, learner_loader[args.learner]['class'],
+        learner_param = learner_loader[args.learner]['default_param'],
+        learning_rate = args.learning_rate,
+        n_estimators = bestitr,
+        n_particles = args.n_particles,
+        d_particles = args.d_particles,
+        bandwidth = args.bandwidth,
+        subsample = args.subsample)
+    reg.fit(X_train, Y_train)
+    
+    # test prediction
+    P_test = reg.predict(X_test)
+    RMSE_test = model.rmse_with_standardised_output(Y_test, P_test, Y_train_std)
+    print("[{:02d}th trial RMSE] Test {:.4f} | Val {:.4f} | Bestitr {:d}".format(kth, RMSE_test, np.min(RMSE_val_eachitr), bestitr))
+    return RMSE_test, bestitr
+
+
+def main(args):
+    np.random.seed(1)
+    torch.manual_seed(1)
+    torch.set_num_threads(1)
+    
+    # load dataset
+    data = dataset_loader[args.dataset]()
+    X, Y = data.iloc[:, :-1].values, data.iloc[:, -1].values.reshape(-1,1)
+    folds = create_random_repeat(X.shape[0], args.k_repeat)
+    print("=== Dataset {:s} | Num {:d} | Model {:s} ===".format(args.dataset, X.shape[0], "normal"))
+
+    # results = Parallel(n_jobs=args.n_jobs, backend="multiprocessing")(delayed(one_fold)(X, Y, kth, folds[kth], args) for kth in range(len(folds)))
+    results = Parallel(n_jobs=args.n_jobs, prefer="threads")(delayed(one_fold)(X, Y, kth, folds[kth], args) for kth in range(len(folds)))
+    RMSE_tests = np.array(results)
+
+    print("=== RMSE Test Summary {:.4f} +/- {:.4f} ===".format(np.mean(RMSE_tests[:,0]), np.std(RMSE_tests[:,0])))
+    pd.DataFrame(RMSE_tests).to_csv("./result/" + args.id + "_test_rmse_" + args.dataset + ".csv", index=False, header=["RMSE", "bestitr"])
+
+
+
+#==========================================
+# Execution
+#==========================================
+if __name__ == "__main__":
+    args = parse_arguments()
+    main(args)
 
 
 
