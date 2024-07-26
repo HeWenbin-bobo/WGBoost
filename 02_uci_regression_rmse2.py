@@ -25,7 +25,7 @@ from torch.func import jacrev
 
 import sys
 # sys.path.insert(0, '../src')
-from src.swgboost2 import SWGBoost2
+from src.swgboost3 import SWGBoost3
 from src.model import Gaussian_Loc_Scale
 from src.datasets import dataset_loader
 from src.learners import learner_loader
@@ -43,7 +43,7 @@ def parse_arguments():
     argparser.add_argument("--k_repeat", type=int, default=20)
     argparser.add_argument("--learner", type=str, default="tree")
     argparser.add_argument("--learning_rate", type=float, default=0.1)
-    argparser.add_argument("--n_estimators", type=int, default=40)
+    argparser.add_argument("--n_estimators", type=int, default=4000)
     argparser.add_argument("--n_particles", type=int, default=10)
     argparser.add_argument("--d_particles", type=int, default=2)
     argparser.add_argument("--bandwidth", type=float, default=0.1)
@@ -116,7 +116,7 @@ def one_fold(X, Y, kth, fold_kth, args):
     model = Gaussian_Loc_Scale()
     grad_logp, hess_logp = get_grad_funcs()
 
-    reg = SWGBoost2(grad_logp, hess_logp, learner_loader[args.learner]['class'],
+    reg = SWGBoost3(grad_logp, hess_logp, learner_loader[args.learner]['class'],
         learner_param = learner_loader[args.learner]['default_param'],
         learning_rate = args.learning_rate,
         n_estimators = args.n_estimators,
@@ -132,7 +132,7 @@ def one_fold(X, Y, kth, fold_kth, args):
     bestitr = int( np.argmin(RMSE_val_eachitr) + 1 )
     
     # train the SWGBoost using all the data
-    reg = SWGBoost2(grad_logp, hess_logp, learner_loader[args.learner]['class'],
+    reg = SWGBoost3(grad_logp, hess_logp, learner_loader[args.learner]['class'],
         learner_param = learner_loader[args.learner]['default_param'],
         learning_rate = args.learning_rate,
         n_estimators = bestitr,

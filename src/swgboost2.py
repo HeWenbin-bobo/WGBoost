@@ -32,7 +32,7 @@ from time import perf_counter
 from sklearn.metrics import mean_squared_error, r2_score, f1_score
 import warnings
 
-flag = 0
+warning_flag = 0
 
 #==========================================
 # Main Classes
@@ -48,7 +48,7 @@ class SWGBoost2(BaseEstimator):
             d_particles: int = 1,
             bandwidth: float = 1.0,
             random_state: int = 0,
-            init_iter: float = 5000,
+            init_iter: float = 50,
             init_lr: float = 0.1,
             init_locs: np.ndarray = None,
         ):
@@ -80,9 +80,10 @@ class SWGBoost2(BaseEstimator):
         #                     ElasticNetCV, LassoLarsCV, LassoCV,
         #                     NuSVR, SGDRegressor, KernelRidge, MLPRegressor,
         #                     RidgeCV, ARDRegression, RANSACRegressor, HuberRegressor, TheilSenRegressor, LassoLarsIC}
-        self._models_lst = {DecisionTreeRegressor, LinearRegression, BayesianRidge, KNeighborsRegressor,
-                            ElasticNet, LassoLars, Lasso, SGDRegressor,
-                            Ridge, ARDRegression, RANSACRegressor, LassoLarsIC}
+        # self._models_lst = {DecisionTreeRegressor, LinearRegression, BayesianRidge, KNeighborsRegressor,
+        #                     ElasticNet, LassoLars, Lasso, SGDRegressor,
+        #                     Ridge, ARDRegression, RANSACRegressor, LassoLarsIC}
+        self._models_lst = {DecisionTreeRegressor,}
         self._models = deepcopy(self._models_lst)
         self.custom_loss_metrics = False
     
@@ -155,10 +156,10 @@ class SWGBoost2(BaseEstimator):
             with warnings.catch_warnings(record=True) as w:
                 Xt, Xv, yt, yv = train_test_split(self._X, self._y, test_size=0.2)
                 results = self._create_model(Xt, yt, model_name, time_it=False)
-                if len(w) > 0 and flag == 0:
+                if len(w) > 0 and warning_flag == 0:
                     print(Xt.shape, len(yt), model_name)
                     print(yv)
-                    flag += 1
+                    warning_flag += 1
             model, time = results[0], results[1]
             return self._metrics(yv,
                                  model.predict(Xv), model, time)
@@ -230,7 +231,7 @@ class SWGBoost2(BaseEstimator):
     def gradient(self, P_: np.ndarray, Y_: np.ndarray) -> np.ndarray:
         P = torch.from_numpy(P_)
         Y = torch.from_numpy(Y_).unsqueeze(1).expand(Y_.shape[0], self.n_particles, Y_.shape[1])
-        
+
         gradp = self.grad_logp_vmap(P, Y)
         hessp = self.hess_logp_vmap(P, Y)
 

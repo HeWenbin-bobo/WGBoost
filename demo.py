@@ -1,7 +1,7 @@
 import numpy as np, scipy, torch
 import matplotlib.pyplot as plt, seaborn as sns
 from sklearn.tree import DecisionTreeRegressor
-from src.swgboost import SWGBoost
+from src.swgboost3 import SWGBoost3
 
 X = np.linspace(-3.5, 3.5, 200).reshape(-1,1)                   # input data
 Y = np.sin(X)
@@ -9,7 +9,7 @@ D = scipy.stats.norm(loc=Y.flatten(), scale=0.5)                # target distrib
 
 grad_logp = lambda p, y: - (p - y) / 0.5**2                     # define the log gradient of the target distribution N( p | m=y, s=0.5 ) at a location p conditional on a value y
 hess_logp = lambda p, y: - torch.ones(1) / 0.5**2               # define the log hessian diagonal of the target distribution N( p | m=y, s=0.5 ) at a location p conditional on a value y
-reg = SWGBoost(grad_logp, hess_logp, DecisionTreeRegressor,     # use DecisionTreeRegressor as each base learner
+reg = SWGBoost3(grad_logp, hess_logp, DecisionTreeRegressor,     # use DecisionTreeRegressor as each base learner
                learner_param = {'max_depth': 3, 'random_state': 1},        # pass hyperparameters to DecisionTreeRegressor
                learning_rate = 0.1,                                        # set the learning rate
                n_estimators = 100,                                         # set the number of base learners to be used
@@ -25,3 +25,4 @@ ax.fill_between(X.flatten(), D.ppf(0.025), D.ppf(0.975), color='b', alpha=0.05)
 [ sns.lineplot(x=X.flatten(), y=P[:,ith].flatten(), color="red", ax=ax) for ith in range(reg.n_particles) ]
 fig.tight_layout()
 fig.show()
+
